@@ -1,0 +1,317 @@
+---
+title: "Class_Project"
+author: "Camille Berardone"
+date: "2025-02-28"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#load all necessary libraries
+```{r}
+library(tidyr)  #for data reformatting
+library(dplyr)  #for data reformatting
+library(mobr)   #for data reformatting
+library(openxlsx) #for creating excel files
+library(vegan)   #for PCA analysis
+library(ggplot2) #for PCA visualization
+library(ggpubr)  #for PCA confidence ellipses
+library(ggrepel)  #for PCA plot sample names
+#install.packages("ggordiplots")
+library(ggordiplots)  #for creating proper 95% CI ellipses on PCA
+```
+
+#SECTION 1: DATA REFORMATTING##################################################
+
+#reformat raw data into long format
+```{r}
+dat_lkup <- read.csv('./data/Raw_Data_Protein_wSC.csv', header = FALSE,
+                     nrows = 2)
+dat_lkup <- t(dat_lkup[ , -(1:4)])
+dat_lkup <- data.frame(dat_lkup)
+names(dat_lkup) <- c('group', 'sample')
+#head(dat_lkup)
+dat_lkup$sample <- paste("X", dat_lkup$sample, sep='')
+
+dat <- read.csv('./data/Raw_Data_Protein_wSC.csv', skip = 1)
+dat[1:5, 1:5]
+
+dat_lg <- pivot_longer(dat, cols = starts_with("X"), names_to = "sample")
+dim(dat_lg)
+#head(dat_lg)
+
+dat_lg <- left_join(dat_lg, dat_lkup)
+#head(dat_lg)
+#View(dat_lg)
+
+#write.csv(dat_lg, "transposed_raw_data.csv", row.names = FALSE)
+```
+
+#SECTION 2: RUNNING STATISTICAL ANALYSES#######################################
+
+#run a PCA on the data
+```{r}
+#load the data
+newpca <- read.csv("./data/new_PCA_data.csv")
+
+#view the first few rows
+#head(newpca)
+
+#extract numeric data only
+numeric_data <- newpca[, 3:ncol(newpca)]
+#head(numeric_data)
+
+#run the PCA
+pca_result <- rda(sqrt(numeric_data), scale = FALSE) 
+  #unsure if scaling protein abu is necessary
+summary(pca_result)
+#?rda
+
+#extract PCA scores
+pca_scores <- scores(pca_result, display = "sites")
+
+#add back the group information
+pca_df <- data.frame(pca_scores, Group = newpca$Group)
+
+#visualize with 95% confidence ellipses and add sample names to the plot
+#changing color scale to accommodate for colorblind friendly palettes
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, fill = Group)) +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(level = 0.95, geom = "polygon", alpha = 0.2) +
+  geom_text_repel(aes(label = newpca$Sample), size = 4, max.overlaps = Inf) +
+  #Add sample names
+  scale_color_manual(values = c(
+    "OC2_0" = "#D81B60",
+    "OC2_1" = "#1E88E5",
+    "OC4_0" = "#FFC107",
+    "OC4_1" = "#004D40"
+  )) +
+  scale_fill_manual(values = c(
+    "OC2_0" = "#D81B60",
+    "OC2_1" = "#1E88E5",
+    "OC4_0" = "#FFC107",
+    "OC4_1" = "#004D40"
+  )) +
+  theme_classic() +
+  labs(title = "PCA with 95% Confidence Intervals") +
+  xlim(-5, 4) +
+  ylim(-4, 5)
+```
+
+#use a permanova along with PCA for some statistical results
+```{r}
+#perform a permanova
+permanova_result <- adonis2(numeric_data ~ Group, data = newpca,
+                            method = "bray", permutations = 999)
+permanova_result
+
+#R^2 = 0.29851
+#F = 6.2413
+#p < 0.05
+```
+
+#run direct ordination with RDA - forces the x axis apart
+```{r}
+#run the rda
+rda_result <- rda(sqrt(numeric_data) ~ newpca$Group)
+summary(rda_result)
+
+#look at adjusted R^2 value: 0.2669858; 27% variation explained by the groupings
+RsquareAdj(rda_result)
+
+anova(rda_result) #the model significantly explains the data
+#F statistic = 6.7063
+
+#create an rda plot
+plot(rda_result, display = c('cn','sp','wa'))
+
+#add group names to plot
+text(rda_result, display = 'cn')
+ordiellipse(rda_result, newpca$Group, display = 'sites')
+```
+
+#make the RDA plot look prettier
+```{r}
+#load the data
+newpca <- read.csv("./data/new_PCA_data.csv")
+
+#extract numeric data only
+numeric_data <- newpca[, 3:ncol(newpca)]
+#head(numeric_data)
+
+# Run RDA
+rda_result <- rda(sqrt(numeric_data) ~ newpca$Group)
+summary(rda_result)
+
+#relabel the labels within "Group" within the dataset
+newpca$Group <- factor(newpca$Group, 
+                       levels = c("OC2_0", "OC2_1", "OC4_0", "OC4_1"),
+                       labels = c("OC2 Admission", "OC2 Rehabilitation",
+                                  "OC4 Admission", "OC4 Rehabilitation"))
+
+#extract site scores (samples)
+sites <- scores(rda_result, display = "sites")
+sites_df <- as.data.frame(sites)
+sites_df$Group <- newpca$Group
+
+#summarize to find group centers
+group_centers <- sites_df %>%
+  group_by(Group) %>%
+  summarize(RDA1 = mean(RDA1), RDA2 = mean(RDA2))
+
+#plot
+ggplot(sites_df, aes(x = RDA1, y = RDA2, color = Group)) +
+  geom_point(size = 3) +  # samples
+  stat_ellipse(type = "norm", linetype = 1, level = 0.95) + 
+    #ellipse around groups
+  geom_text(data = group_centers, aes(label = Group), color = "black",
+            fontface = "bold", size = 4) + # group labels
+  theme_minimal() +
+  labs(x = "RDA1",
+       y = "RDA2") +
+  theme(
+    text = element_text(size = 14),
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  ) +
+  scale_color_manual(values = c(
+    "OC2 Admission" = "#D81B60",
+    "OC2 Rehabilitation" = "#1E88E5",
+    "OC4 Admission" = "#FFC107",
+    "OC4 Rehabilitation" = "#004D40"
+  )) +  #colorblind colors
+  geom_vline(xintercept = 0, linetype = "dotted", color = "black") +
+      # dotted vertical line at x = 0
+  geom_hline(yintercept = 0, linetype = "dotted", color = "black")
+      # dotted horizontal line at y = 0
+```
+
+#create barplot for average number of proteins for each oiling category
+```{r}
+average <- read.csv("data/new_avg_ocs_proteins.csv")
+average
+average$count <- as.numeric(average$count)
+str(average)
+
+
+# Summarize data to calculate mean and standard deviation
+summary_data <- average %>%
+  group_by(OC) %>%
+  summarize(
+    mean_count = mean(count),
+    sd_count = sd(count)
+  )
+
+#plot with bars and error bars and change the colors of the bars (colorblind)
+ggplot(summary_data, aes(x = OC, y = mean_count, fill = OC)) + 
+  geom_bar(stat = "identity", color = "black", width = 0.7) + 
+  geom_errorbar(aes(ymin = mean_count - sd_count, ymax = mean_count + sd_count), 
+                width = 0.2) + 
+  labs(x = "Oiling Category", y = "Mean Protein Count (±SD)") + 
+  scale_fill_manual(values = c(
+    "OC2_Admission" = "#D81B60",
+    "OC2_Rehabilitation" = "#1E88E5",
+    "OC4_Admission" = "#FFC107",
+    "OC4_Rehabilitation" = "#004D40"
+  )) +
+  theme_classic() + 
+  theme(legend.position = "none") +
+  theme(axis.title.x = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        axis.text.x = element_text(size = 12,face = "bold"),
+        axis.text.y = element_text(size = 12,face = "bold")) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, max(average$count) * 1.05),
+                     breaks = seq(0, max(average$count), by = 50))
+```
+
+#anova with tukey posthoc for average number of proteins per group
+```{r}
+#read in the data
+avgaov <- read.csv("data/new_avg_ocs_proteins.csv")
+avgaov
+
+anova <- aov(count~OC, data=avgaov)
+summary(anova)
+
+tukey <- TukeyHSD(anova)
+tukey
+
+#OC2_0 vs OC2_1 = significant
+#OC2_0 vs OC4_0 = significant
+#OC2_1 vs OC4_1 = not significant
+#OC4_0 vs OC4_1 = significant
+```
+
+#SECTION 3: FUTURE ANALYSES####################################################
+
+#mobr diversity comparison - will look into after project completion
+```{r}
+pro_mob_in <- make_mob_in(dat[ , 5:ncol(dat)], plot_attr = dat[ , 1:4])
+pro_mob_in
+
+plot_rarefaction(pro_mob_in, group_var = )
+```
+
+#reanalyzing 95% confidence interval ellipses on PCA - will look into after
+project completion
+```{r}
+#note: using code comments from abbey's review file
+#create new pca plot with 95% confidence intervals
+pca_plot <- gg_ordiplot(pca_result, groups = pca_df$Group, kind = "se",
+                        conf = 0.95, pt.size = 3)
+
+# Add sample names into the site scores
+pca_plot$data$sites$SampleName <- newpca$Sample
+
+# Now plot
+pca_plot$plot +
+  geom_text(data = pca_plot$data$sites, 
+            aes(x = x, y = y, label = SampleName),
+            #now label is inside the data
+            vjust = -1, size = 3) +
+  ggtitle("PCA of Samples") +
+  theme_classic()
+
+# 1. Turn pca_plot$data$sites into a real data frame
+site_scores <- as.data.frame(pca_plot$data$sites)
+
+# 2. Add your sample names to the new data frame
+site_scores$SampleName <- newpca$Sample
+
+# 3. Now plot using site_scores
+pca_plot$plot +
+  geom_text(data = site_scores, 
+            aes(x = PC1, y = PC2, label = SampleName), 
+            vjust = -1, size = 3) +
+  ggtitle("PCA of Samples") +
+  theme_classic()
+```
+
+#identify key proteins in the data
+    #notes to self on how to do this...
+      #could use datasheet with calculated empai molar ratios and separate from
+      smallest to largest
+      #organize by top 10 in each
+      #look for similar and different proteins. what is the overall function of
+      these proteins?
+```{r}
+#note2: use code from assignment that organized species from most to
+#least abundant
+```
+
+#run direct ord with CCA - look at proportional (rather than absolute changes)
+```{r}
+#run the cca
+cca_result <- cca(sqrt(numeric_data) ~ newpca$Group)
+
+#look at adjusted R^2 value: 0.1449003; 14% variation explained by the groupings
+RsquareAdj(cca_result)
+
+anova(cca_result) #the model significantly explains the data
+
+#create a cca plot
+plot(cca_result, display = c('cn','sp'))
+
+#add group names to plot - not the best display of the data
+text(cca_result, display = 'cn')
+```
